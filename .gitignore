@@ -1,0 +1,37 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch and Models
+*.pth
+*.pt
+*.ckpt
+models/checkpoints/
+models/pretrained/
+
+# Datasets and Media
+data/
+*.zip
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.avi
+*.npy
+
+# Logs and Outputs
+results/
+logs/
+*.json
+*.log
+.DS_Store
+
+# Virtual Environments
+venv/
+env/
+.env
+
+# Flask API
+instance/
+.webassets-cache
