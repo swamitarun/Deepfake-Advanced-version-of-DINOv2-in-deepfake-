@@ -54,6 +54,7 @@ def crop_faces(config: dict):
         margin=face_config['margin'],
         confidence_threshold=face_config['confidence_threshold'],
         image_size=config['data']['image_size'],
+        device=config.get('device', 'cpu'),
     )
 
     for class_name in ['real', 'fake']:
@@ -71,10 +72,13 @@ def crop_faces(config: dict):
         logger.info(f"Processing {len(image_files)} {class_name} images...")
 
         for img_path in tqdm(image_files, desc=f"Face crop [{class_name}]"):
+            save_path = dst_dir / img_path.name
+            if save_path.exists():
+                continue
+                
             try:
                 face = detector.detect_and_crop(str(img_path))
                 if face is not None:
-                    save_path = dst_dir / img_path.name
                     face.save(str(save_path))
             except Exception as e:
                 logger.warning(f"Failed to process {img_path.name}: {e}")

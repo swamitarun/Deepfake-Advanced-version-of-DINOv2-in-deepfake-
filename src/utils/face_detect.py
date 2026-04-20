@@ -41,19 +41,31 @@ class FaceDetector:
         self.confidence_threshold = confidence_threshold
         self.image_size = image_size
 
+        self._mtcnn_unavailable_warned = False
+        # Always use CPU — CUDA MTCNN breaks in DataLoader worker subprocesses (fork + CUDA)
+        self._init_device = 'cpu'
+        self._init_params = dict(image_size=image_size, margin=margin)
+        self.mtcnn = self._try_init_mtcnn()
+        if self.mtcnn is not None:
+            logger.info("MTCNN face detector initialized successfully (CPU)")
+
+    def _try_init_mtcnn(self):
+        """Initialize MTCNN on CPU (safe in DataLoader worker subprocesses)."""
         try:
             from facenet_pytorch import MTCNN
-            self.mtcnn = MTCNN(
-                image_size=image_size,
-                margin=margin,
-                keep_all=False,       # Return only the largest face
-                post_process=False,   # Don't normalize (we do it ourselves)
-                device=device,
+            return MTCNN(
+                image_size=self._init_params['image_size'],
+                margin=self._init_params['margin'],
+                keep_all=False,
+                post_process=False,
+                device=self._init_device,
             )
-            logger.info("MTCNN face detector initialized")
         except ImportError:
             logger.error("facenet-pytorch not installed. Run: pip install facenet-pytorch")
-            self.mtcnn = None
+            return None
+        except Exception as e:
+            logger.error(f"MTCNN init failed: {type(e).__name__}: {e}")
+            return None
 
     def detect_and_crop(
         self,
@@ -72,10 +84,13 @@ class FaceDetector:
             If return_bbox=True, returns (face_image, bbox) tuple.
         """
         if self.mtcnn is None:
-            logger.warning("MTCNN not available, returning original image")
-            if isinstance(image, str):
-                image = Image.open(image).convert('RGB')
-            return (image, None) if return_bbox else image
+            # Lazy re-init for DataLoader worker processes (CUDA broken after fork → CPU fallback)
+            self.mtcnn = self._try_init_mtcnn()
+        if self.mtcnn is None:
+            if not self._mtcnn_unavailable_warned:
+                logger.warning("MTCNN unavailable — face crops disabled. Run: pip install facenet-pytorch")
+                self._mtcnn_unavailable_warned = True
+            return (None, None) if return_bbox else None
 
         # Load image if path
         if isinstance(image, str):
@@ -87,10 +102,10 @@ class FaceDetector:
         boxes, probs = self.mtcnn.detect(image)
 
         if boxes is None or len(boxes) == 0:
-            logger.debug("No face detected, returning original image")
+            logger.debug("No face detected, returning None")
             if return_bbox:
-                return image, None
-            return image
+                return None, None
+            return None
 
         # Get the highest confidence detection
         best_idx = np.argmax(probs)
@@ -99,11 +114,11 @@ class FaceDetector:
         if best_prob < self.confidence_threshold:
             logger.debug(
                 f"Face confidence ({best_prob:.2f}) below threshold "
-                f"({self.confidence_threshold}), returning original"
+                f"({self.confidence_threshold}), returning None"
             )
             if return_bbox:
-                return image, None
-            return image
+                return None, None
+            return None
 
         # Crop face with margin
         box = boxes[best_idx]

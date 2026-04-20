@@ -1,3 +1,2 @@
+from .classifier import DeepfakeClassifier
 from .dino_extractor import DINOv2Extractor
-from .classifier import DualInputDeepfakeClassifier, SingleInputClassifier, AdvancedClassifierHead
-from .temporal_model import TemporalLSTMAggregator, WeightedAttentionAggregator

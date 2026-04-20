@@ -1,88 +1,46 @@
 # ============================================================
-# DINOv2 Deepfake Detection — Advanced Configuration
-# ============================================================
-# This config controls the ADVANCED architecture:
-# - Multi-token pooling (CLS + Mean + Max = 1152-dim)
-# - Dual input pipeline (full image + face crop = 2304-dim)
-# - Partial fine-tuning (last 2 blocks)
-# - Advanced classifier (LayerNorm + GELU)
-# - LSTM temporal model for video
+# DINOv2 Deepfake Detection — Clean Config
+# Backbone : dinov2_vitb14 (ViT-Base, 768-dim CLS token)
+# Input    : Full image + Face crop -> concat 1536-dim -> MLP
 # ============================================================
 
-# --- Data ---
 data:
-  raw_dir: "data/raw"                # Must contain real/ and fake/ subdirs
+  raw_dir: "data/raw"
   processed_dir: "data/processed"
-  faces_dir: "data/faces"            # Pre-cropped faces (optional)
+  faces_dir: "data/faces"
   image_size: 224
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
   num_workers: 4
 
-# --- Model ---
 model:
-  # DINOv2 backbone
-  dino_variant: "dinov2_vits14"      # ViT-Small/14 (384-dim embeddings)
-  feature_dim: 384                   # Base embedding dim (auto-computed: 384×3×2=2304)
-  freeze_backbone: true              # Freeze most of backbone
-  unfreeze_last_n_blocks: 2          # Unfreeze blocks 10 & 11 for partial fine-tuning
+  dino_variant: "dinov2_vitb14"
+  freeze_backbone: true
+  unfreeze_last_n_blocks: 2
+  dual_input: true
 
-  # Feature extraction mode
-  pooling_mode: "multi"              # 'multi' = CLS+Mean+Max (1152), 'cls' = CLS only (384)
-  dual_input: true                   # Process both full image AND face crop
-
-  # Advanced Classifier (LayerNorm + GELU + Dropout)
-  classifier:
-    hidden_dims: [512, 256, 128]     # Larger dims to handle 2304 input
-    dropout: 0.3
-    num_classes: 2
-
-# --- Training ---
 training:
-  batch_size: 32
-  epochs: 30
-  learning_rate: 0.001               # Classifier learning rate
-  backbone_lr_factor: 0.1            # Backbone LR = 0.001 × 0.1 = 0.0001
-  weight_decay: 0.0001
-  optimizer: "adam"                   # adam or sgd
-  scheduler: "cosine"                # cosine or step
-  step_size: 10                      # For step scheduler
-  gamma: 0.1                         # For step scheduler
-  early_stopping_patience: 7
-  warmup_epochs: 3                   # LR warmup (ramps from 0 to target LR)
+  batch_size: 64
+  epochs: 2
+  learning_rate: 0.0003
+  backbone_lr_factor: 0.05
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 3
+  early_stopping_patience: 10
+  label_smoothing: 0.1
   seed: 42
 
-# --- Face Detection ---
 face_detection:
-  enabled: true                      # ENABLED for dual-input pipeline
+  enabled: true
   confidence_threshold: 0.9
-  margin: 40                         # Pixel margin around detected face
+  margin: 40
 
-# --- Video ---
-video:
-  num_frames: 16                     # Frames to extract per video
-  aggregation: "lstm"                # 'lstm', 'weighted', 'mean', or 'majority'
-  lstm_hidden_dim: 256               # Hidden size for LSTM aggregator
-  lstm_num_layers: 1                 # Number of LSTM layers
-
-# --- Paths ---
 paths:
   checkpoint_dir: "models/checkpoints"
-  pretrained_dir: "models/pretrained"
   log_dir: "results/logs"
   plot_dir: "results/plots"
-  prediction_dir: "results/predictions"
 
-# --- Feature Caching ---
-caching:
-  cache_dir: "data/cached_features"  # DINOv2 features saved here
-  enabled: false                     # Set true to use cached features for training
-
-# --- Device ---
-device: "cuda"                       # cuda or cpu
-
-# --- API ---
-api:
-  host: "0.0.0.0"
-  port: 5000
+device: "cuda"

@@ -37,6 +37,7 @@ import argparse
 import logging
 from pathlib import Path
 from tqdm import tqdm
+import concurrent.futures
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -49,6 +50,17 @@ logger = logging.getLogger(__name__)
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'}
 
 
+def _process_single_video(args):
+    """Helper for multiprocessing so it can be pickled."""
+    video_path, dst_dir, num_frames = args
+    try:
+        extractor = VideoFrameExtractor(num_frames=num_frames)
+        frames = extractor.extract(video_path=str(video_path), output_dir=str(dst_dir))
+        return len(frames), None
+    except Exception as e:
+        return 0, str(e)
+
+
 def extract_all_frames(
     video_dir: str,
     output_dir: str,
@@ -56,55 +68,52 @@ def extract_all_frames(
 ):
     """
     Extract frames from all videos in real/ and fake/ subdirectories.
-
-    Args:
-        video_dir: Root directory containing real/ and fake/ video subdirs.
-        output_dir: Root directory to save extracted frames.
-        num_frames: Number of frames to extract per video.
+    Runs in PARALLEL using multiprocessing.
     """
-    extractor = VideoFrameExtractor(num_frames=num_frames)
     total_videos = 0
     total_frames = 0
+    max_workers = 16  # Use up to 16 cores for fast extraction
 
     print("\n" + "=" * 60)
-    print("  VIDEO FRAME EXTRACTION")
+    print("  FAST VIDEO FRAME EXTRACTION (MULTIPROCESSING)")
     print("=" * 60)
     print(f"  Source:     {video_dir}")
     print(f"  Output:     {output_dir}")
-    print(f"  Frames/vid: {num_frames}\n")
+    print(f"  Frames/vid: {num_frames}")
+    print(f"  CPU Cores:  {max_workers}\n")
 
     for class_name in ['real', 'fake']:
         src_dir = Path(video_dir) / class_name
         dst_dir = Path(output_dir) / class_name
 
         if not src_dir.exists():
-            logger.warning(f"Video directory not found: {src_dir}")
             continue
 
         os.makedirs(dst_dir, exist_ok=True)
-
-        # Find all video files
-        video_files = sorted([
-            f for f in src_dir.iterdir()
-            if f.suffix.lower() in VIDEO_EXTENSIONS
-        ])
+        video_files = sorted([f for f in src_dir.iterdir() if f.suffix.lower() in VIDEO_EXTENSIONS])
 
         if not video_files:
-            logger.warning(f"No videos found in {src_dir}")
             continue
 
         print(f"  Processing {len(video_files)} {class_name} videos...")
-
-        for video_path in tqdm(video_files, desc=f"  [{class_name}]", ncols=80):
-            try:
-                frames = extractor.extract(
-                    video_path=str(video_path),
-                    output_dir=str(dst_dir),
-                )
-                total_frames += len(frames)
-                total_videos += 1
-            except Exception as e:
-                logger.warning(f"Failed to process {video_path.name}: {e}")
+        
+        tasks = [(v, dst_dir, num_frames) for v in video_files]
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # list(tqdm(..., total=length)) wraps the results into a progress bar
+            results = list(tqdm(
+                executor.map(_process_single_video, tasks), 
+                total=len(tasks), 
+                desc=f"  [{class_name}]", 
+                ncols=100
+            ))
+            
+            for frames_count, err in results:
+                if err:
+                    pass
+                else:
+                    total_frames += frames_count
+                    total_videos += 1
 
     print(f"\n  ✅ Extracted {total_frames} frames from {total_videos} videos")
     print(f"     Saved to: {output_dir}/")
