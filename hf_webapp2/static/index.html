@@ -75,14 +75,14 @@
             </defs>
           </svg>
         </div>
-        <p class="drop-title">Drop your video here</p>
+        <p class="drop-title">Drop your video or photo here</p>
         <p class="drop-sub">or <span class="link-text">browse files</span></p>
-        <p class="drop-limits">MP4 · MOV · AVI · MKV &nbsp;|&nbsp; Max 30 MB &nbsp;|&nbsp; Max 60 sec</p>
+        <p class="drop-limits">MP4 · MOV · AVI · JPG · PNG &nbsp;|&nbsp; Max 30 MB &nbsp;|&nbsp; Max 60 sec</p>
       </div>
       <input
         id="file-input"
         type="file"
-        accept=".mp4,.mov,.avi,.mkv,video/*"
+        accept=".mp4,.mov,.avi,.mkv,.jpg,.jpeg,.png,.webp,video/*,image/*"
         style="display:none"
         onchange="onFileSelected(event)"
       />
@@ -99,6 +99,7 @@
         </div>
         <div id="video-container" class="video-container">
           <video id="video-preview" class="video-preview" controls muted></video>
+          <img id="image-preview" class="video-preview hidden" style="display: none;" />
         </div>
         <button id="analyze-btn" class="analyze-btn" onclick="analyzeVideo()">
           <span class="btn-icon">🔍</span>

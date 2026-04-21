@@ -1,11 +1,7 @@
 """
 DeepShield AI — Full-Stack FastAPI Backend
 Serves the frontend UI + deepfake detection API from one HF Space.
-
-Routes:
-  GET  /          → Serves index.html (the web UI)
-  GET  /health    → JSON health check
-  POST /predict   → Video upload → REAL/FAKE prediction
+Self-contained version with exact architectural parity to test_real.py 
 """
 
 import os
@@ -33,66 +29,63 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# Model Definition (self-contained)
-# ─────────────────────────────────────────────
+# -------------------------------------------------------------
+# EXACT PARITY MODEL DEFINITIONS (Copied from src/ to be standalone)
+# -------------------------------------------------------------
 
 class DINOv2Extractor(nn.Module):
-    def __init__(self, variant: str = "dinov2_vitb14"):
+    def __init__(self, variant: str = 'dinov2_vitb14'):
         super().__init__()
-        logger.info(f"Loading {variant} from torch.hub...")
+        self.embed_dim = 768
+        logger.info(f"Loading {variant} from torch.hub ...")
         self.backbone = torch.hub.load(
-            "facebookresearch/dinov2", variant, pretrained=True
+            'facebookresearch/dinov2', variant, pretrained=True,
         )
-        self.feature_dim = 768
+        logger.info("DINOv2 loaded.")
         for p in self.backbone.parameters():
             p.requires_grad = False
-        logger.info("DINOv2 backbone loaded (frozen).")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.backbone(x)
 
-
 class MLPClassifier(nn.Module):
-    def __init__(self, input_dim: int = 1536, num_classes: int = 2, dropout: float = 0.3):
+    def __init__(self, input_dim: int = 1536, num_classes: int = 2, dropout: float = 0.4):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, 512),
-            nn.LayerNorm(512),
+            nn.BatchNorm1d(512),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(512, 256),
-            nn.LayerNorm(256),
+            nn.BatchNorm1d(256),
             nn.GELU(),
-            nn.Dropout(dropout / 2),
+            nn.Dropout(dropout * 0.75),
             nn.Linear(256, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-
 class DeepfakeDetector(nn.Module):
     def __init__(self, dual_input: bool = True):
         super().__init__()
         self.dual_input = dual_input
-        self.extractor = DINOv2Extractor()
+        self.extractor = DINOv2Extractor('dinov2_vitb14')
         feat_dim = 1536 if dual_input else 768
-        self.classifier = MLPClassifier(input_dim=feat_dim)
+        self.classifier = MLPClassifier(feat_dim)
 
-    def forward(self, full_img: torch.Tensor, face_img: torch.Tensor = None) -> torch.Tensor:
-        full_feat = self.extractor(full_img)
-        if self.dual_input and face_img is not None:
-            face_feat = self.extractor(face_img)
-            feats = torch.cat([full_feat, face_feat], dim=1)
+    def forward(self, full_image: torch.Tensor, face_crop: torch.Tensor = None) -> torch.Tensor:
+        full_feat = self.extractor(full_image)
+        if self.dual_input:
+            face_feat = self.extractor(face_crop if face_crop is not None else full_image)
+            features  = torch.cat([full_feat, face_feat], dim=1)
         else:
-            feats = full_feat
-        return self.classifier(feats)
+            features = full_feat
+        return self.classifier(features)
 
-
-# ─────────────────────────────────────────────
-# App Setup
-# ─────────────────────────────────────────────
+# -------------------------------------------------------------
+# APP SETTINGS & SETUP
+# -------------------------------------------------------------
 
 app = FastAPI(
     title="DeepShield AI",
@@ -108,60 +101,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CHECKPOINT_PATH = Path("best_model.pth")
 MAX_FRAMES = 20
 MAX_FILE_MB = 30
 MAX_DURATION_SEC = 60
 
-# MTCNN face detector (initialized once, CPU is fine for detection)
+# MTCNN face detector setup to mimic src/utils/face_detect.py precisely
 try:
     MTCNN_DETECTOR = MTCNN(
         image_size=224,
         margin=40,
-        min_face_size=20,
-        thresholds=[0.6, 0.7, 0.9],
         keep_all=False,
+        post_process=False,
         device='cpu'
     )
     logger.info("MTCNN face detector initialized.")
 except Exception as e:
     MTCNN_DETECTOR = None
-    logger.warning(f"MTCNN init failed (will use full frame fallback): {e}")
+    logger.warning(f"MTCNN init failed (will use fallback): {e}")
 
+# Exact transform replication
 TRANSFORM = T.Compose([
     T.Resize((224, 224)),
+    T.CenterCrop(224),
     T.ToTensor(),
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-
 def detect_face_crop(img: Image.Image) -> Image.Image:
-    """Detect face with MTCNN and return cropped face, or None if not found."""
     if MTCNN_DETECTOR is None:
         return None
     try:
-        # MTCNN returns the cropped tensor directly
-        face_tensor = MTCNN_DETECTOR(img)
-        if face_tensor is not None:
-            # Convert tensor back to PIL Image
-            face_np = face_tensor.permute(1, 2, 0).numpy()
-            face_np = ((face_np * 128) + 127.5).clip(0, 255).astype(np.uint8)
-            return Image.fromarray(face_np)
+        boxes, probs = MTCNN_DETECTOR.detect(img)
+        if boxes is None or len(boxes) == 0:
+            return None
+        
+        best_idx = np.argmax(probs)
+        best_prob = probs[best_idx]
+        if best_prob < 0.9:
+            return None
+            
+        box = boxes[best_idx]
+        w, h = img.size
+        x1, y1, x2, y2 = [int(b) for b in box]
+        margin = 40
+        
+        x1 = max(0, x1 - margin)
+        y1 = max(0, y1 - margin)
+        x2 = min(w, x2 + margin)
+        y2 = min(h, y2 + margin)
+        
+        face = img.crop((x1, y1, x2, y2))
+        return face.resize((224, 224), Image.LANCZOS)
     except Exception:
         pass
     return None
 
-
 @lru_cache(maxsize=1)
 def load_model() -> DeepfakeDetector:
+    # First check default path, then fallback if possible
+    ckpt_path_to_load = None
     if not CHECKPOINT_PATH.exists():
-        raise RuntimeError("best_model.pth not found. Upload it to this HF Space.")
+        fallback_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models2/checkpoints/best_model.pth')
+        if os.path.exists(fallback_path):
+            ckpt_path_to_load = fallback_path
+        else:
+            raise RuntimeError("best_model.pth not found. Upload it to this HF Space.")
+    else:
+        ckpt_path_to_load = str(CHECKPOINT_PATH)
 
-    logger.info(f"Loading checkpoint on {DEVICE}...")
-    ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
+    logger.info(f"Loading checkpoint on {DEVICE} from {ckpt_path_to_load} ...")
+    ckpt = torch.load(ckpt_path_to_load, map_location=DEVICE)
     state = ckpt.get("model_state_dict", ckpt)
 
+    # Determine architecture
     mlp_w = state.get("classifier.net.0.weight", None)
     dual = (mlp_w.shape[1] == 1536) if mlp_w is not None else True
 
@@ -171,41 +185,25 @@ def load_model() -> DeepfakeDetector:
     logger.info(f"Model ready. dual_input={dual}, device={DEVICE}")
     return model
 
-
-def extract_frames(video_path: str, output_dir: str, num_frames: int = MAX_FRAMES) -> list:
+def extract_frames(video_path: str, temp_dir: str, num_frames: int = MAX_FRAMES) -> list:
     cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError("Cannot open video file.")
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25
-    duration = total_frames / fps if fps > 0 else 0
-
-    if duration > MAX_DURATION_SEC:
-        cap.release()
-        raise ValueError(f"Video too long ({duration:.0f}s). Max: {MAX_DURATION_SEC}s.")
-
-    if total_frames <= 0:
-        total_frames = int(fps * MAX_DURATION_SEC)
-
-    step = max(1, total_frames // num_frames)
-    target_indices = set(range(0, total_frames, step))
-    saved_paths = []
-    frame_idx = 0
-
-    while len(saved_paths) < num_frames:
+    if not cap.isOpened(): return []
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    step = max(1, (total if total > 0 else 300) // num_frames)
+    indices = set(range(0, total if total > 0 else 300, step))
+    
+    saved = []
+    for i in range(total if total > 0 else 300):
         ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx in target_indices:
+        if not ret: break
+        if i in indices:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            path = os.path.join(output_dir, f"frame_{len(saved_paths):04d}.jpg")
-            Image.fromarray(rgb).save(path, quality=90)
-            saved_paths.append(path)
-        frame_idx += 1
-
+            path = os.path.join(temp_dir, f"frame_{len(saved):03d}.jpg")
+            Image.fromarray(rgb).save(path)
+            saved.append(path)
+            if len(saved) >= num_frames: break
     cap.release()
-    return saved_paths
+    return saved
 
 
 def run_inference(model: DeepfakeDetector, frame_paths: list) -> dict:
@@ -215,14 +213,12 @@ def run_inference(model: DeepfakeDetector, frame_paths: list) -> dict:
             try:
                 img = Image.open(fpath).convert("RGB")
                 t_img = TRANSFORM(img).unsqueeze(0).to(DEVICE)
-
-                # Try MTCNN face detection first (same as test_real.py)
-                t_face = t_img  # default fallback = full frame
+                t_face = t_img
+                
                 if model.dual_input:
                     face_crop = detect_face_crop(img)
                     if face_crop is not None:
                         t_face = TRANSFORM(face_crop).unsqueeze(0).to(DEVICE)
-                    # else: fallback to full image (face not detected)
 
                 logits = model(t_img, t_face if model.dual_input else None)
                 prob = torch.softmax(logits, dim=1)[0, 1].item()
@@ -233,24 +229,8 @@ def run_inference(model: DeepfakeDetector, frame_paths: list) -> dict:
     if not fake_probs:
         raise ValueError("No frames could be processed.")
 
-    # 1. Advanced Aggregation (Top 50% Mean)
-    # Deepfake artifacts might only appear in parts of the video.
-    # Averaging all frames dilutes the score. We take the top 50% most suspicious frames.
-    sorted_probs = sorted(fake_probs, reverse=True)
-    top_k = max(1, len(sorted_probs) // 2)
-    video_fake_prob = float(np.mean(sorted_probs[:top_k]))
-
-    # 2. Ratio Check
-    # If at least 30% of frames are distinctly flagged as Fake, mark the whole video as Fake.
-    fake_frame_count = sum(1 for p in fake_probs if p > 0.5)
-    fake_ratio = fake_frame_count / len(fake_probs)
-
-    is_fake = (video_fake_prob > 0.5) or (fake_ratio >= 0.3)
-
-    # Ensure UI consistency: If flagged as FAKE by ratio, but probability is low, boost it to 51%
-    if is_fake and video_fake_prob <= 0.5:
-        video_fake_prob = 0.51
-
+    video_fake_prob = float(np.mean(fake_probs))
+    is_fake = video_fake_prob > 0.5
     avg_real = 1.0 - video_fake_prob
 
     return {
@@ -262,10 +242,9 @@ def run_inference(model: DeepfakeDetector, frame_paths: list) -> dict:
         "per_frame_scores": [round(p * 100, 1) for p in fake_probs],
     }
 
-
-# ─────────────────────────────────────────────
-# API Routes (must be defined BEFORE static mount)
-# ─────────────────────────────────────────────
+# -------------------------------------------------------------
+# API ROUTES
+# -------------------------------------------------------------
 
 @app.on_event("startup")
 async def startup_event():
@@ -274,20 +253,23 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Startup model load failed: {e}")
 
-
 @app.get("/health")
 def health_check():
+    try:
+        model_loaded = CHECKPOINT_PATH.exists() or os.path.exists(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models2/checkpoints/best_model.pth'))
+    except:
+        model_loaded = False
+        
     return {
         "status": "ok",
         "model": "DINO-G50 Deepfake Detector",
         "device": str(DEVICE),
-        "model_loaded": CHECKPOINT_PATH.exists(),
+        "model_loaded": model_loaded,
     }
-
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    allowed_exts = {".mp4", ".mov", ".avi", ".mkv"}
+    allowed_exts = {".mp4", ".mov", ".avi", ".mkv", ".jpg", ".jpeg", ".png", ".webp"}
     ext = Path(file.filename).suffix.lower() if file.filename else ""
 
     if ext not in allowed_exts:
@@ -312,9 +294,14 @@ async def predict(file: UploadFile = File(...)):
         model = load_model()
         logger.info(f"[{job_id}] Processing: {file.filename} ({size_mb:.1f} MB)")
 
-        frame_paths = extract_frames(str(video_path), str(frames_dir))
-        if not frame_paths:
-            raise HTTPException(422, "No frames could be extracted from video.")
+        if ext in {".mp4", ".mov", ".avi", ".mkv"}:
+            frame_paths = extract_frames(str(video_path), str(frames_dir))
+            if not frame_paths:
+                raise HTTPException(422, "No frames could be extracted from video.")
+        else:
+            img_path = frames_dir / f"frame_0000{ext}"
+            shutil.copy(video_path, img_path)
+            frame_paths = [str(img_path)]
 
         result = run_inference(model, frame_paths)
         result["filename"] = file.filename
@@ -335,8 +322,4 @@ async def predict(file: UploadFile = File(...)):
         shutil.rmtree(temp_dir, ignore_errors=True)
         logger.info(f"[{job_id}] Cleanup done.")
 
-
-# ─────────────────────────────────────────────
-# Static Frontend (mounted LAST — serves index.html at /)
-# ─────────────────────────────────────────────
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
