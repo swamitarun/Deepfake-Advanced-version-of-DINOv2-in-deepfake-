@@ -379,6 +379,8 @@ Same interface as above, but backed by the **10-epoch** model checkpoint (`model
 
 ## �� Authors & Credits
 
-- **avoub** — Architecture design, DIVOG50 SSL modifications, training pipeline, web app, deployment
-- Built upon **DINOv2** by Meta AI Research (Facebook Research) — SSL pre-training via self-distillation with no labels
+Tarun Swami
+
+- **Tarun Swami** — Architecture design, DIVOG50 SSL modifications, training pipeline, web app, deployment
+- Built upon new fined tune using **DINOv2** by Meta AI Research (Facebook Research)  — SSL pre-training via self-distillation with no labels
 - Face detection via **FaceNet-PyTorch** (MTCNN implementation)
